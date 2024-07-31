@@ -37,3 +37,32 @@ Frequently the file will be stored at SLAC/USDF, but the reading code will be ru
 
 .. [#cfitsio-posix-caveat] ``CFITSIO`` has very limited support for reading over HTML, but it's not sufficient to solve this problem.
 
+Overview and Transition Plan
+============================
+
+The ``Exposure`` and ``afw.table.io`` systems are so intertwined that replacing only the problematic parts is effectively impossible, and the proposal described here is an _eventual_ complete replacement.
+It centers around a new, largely-complete library, `ShoeFits`, that will replace ``afw.table.io`` and make it much easier to define ``Exposure`` replacement types in pure Python.
+The details of those replacement types is left unspecified for now, but we do expect more than one - most likely one for post-ISR exposures, another for processed visit images, one for coadds, and another for difference images.
+These will ultimately depend on a completely new suite of component types.
+
+Initially, however, the transition will focus on defining the on-disk data models for the ``Exposure``-replacement types, which will take the form of ``Pydantic`` model classes with ``ShoeFits`` annotations for both the top-level ``Exposure`` replacement and all components.
+These will be used to reimplement serialization for ``Exposure`` and its current component types in pure Python.
+The new on-disk data models will be invoked by new ``Butler`` ``Formatter`` types, and we'll be able to configure them in our data repositories without changing any of the code, so it should be almost entirely transparent to our pipeline code.
+
+The next part of the transition involves writing new pure-Python interfaces for each ``Exposure`` replacement type and all component types.
+Many component implementations will continue to be backed by our current C++ code, but we'll make sure that future implementations of any interfaces we define do not require C++.
+For some particularly simple component types, the Pydantic model may serve as the eventual in-memory type as well,
+These new types should map naturally to the serialization models, and the thinking that will have gone into those models and the experience gained from working with the current ``afw`` types should combine to make this much less daunting than it might sound.
+The top level types will correspond to new butler storage classes, but they'll share a ``Formatter`` with ``Exposure``, much in the same way that ``Arrow`` and ``DataFrame`` share a formatter, allowing us to do conversions in ``Butler.get`` and ``put``.
+We'll want to replace the storage class of existing dataset types (or define new versions of those dataset types, if we want to change the names anyway) to ensure the new types are the ones users get by default.
+At this stage individual ``PipelineTasks`` can opt in to the new types by using a new storage class in their connections, but as long as they use the old storage class in their connections they won't be affected.
+Evolving task code will typically proceed from a top-level ``PipelineTask`` down to its subtasks, with calls converting between new and old types at the boundary (at worst we can use the model types to convert between them, but it will probably make sense to have direct bidirectional conversion methods).
+
+The final code conversions will be C++ algorithm that currently take ``Exposure`` or its components.
+In the vast majority of cases, I expect us to change the signatures on the C++/Python boundary to work with lower-level objects (``numpy`` arrays and built-in scalars).
+For example, ``lsst.afw.image.Image`` is just a ``numpy`` array and two integers, and in all cases I can think of, we'd actually be better off only passing to C++ a PSF model image rather than a full, spatially varying PSF model object.
+
+This means that actually dropping the ``Exposure`` class, its components, and the ``afw.table.io`` framework can only occur at the end of a very long process, and throughout that process the old classes and new classes will coexist.
+``Exposure`` itself may be the first to go, and some component types that need to be passed to C++ may never be converted.
+The ``afw.table.io`` library can be retired only when we decide to drop support for reading datasets written before the transition to the new data models.
+There is currently no plan for implementing an alternate reader for old files - it's probably possible, but it would be easier to migrate any old processing runs we need to keep via a conversion script than support the old format indefinitely.
