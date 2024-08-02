@@ -66,3 +66,72 @@ This means that actually dropping the ``Exposure`` class, its components, and th
 ``Exposure`` itself may be the first to go, and some component types that need to be passed to C++ may never be converted.
 The ``afw.table.io`` library can be retired only when we decide to drop support for reading datasets written before the transition to the new data models.
 There is currently no plan for implementing an alternate reader for old files - it's probably possible, but it would be easier to migrate any old processing runs we need to keep via a conversion script than support the old format indefinitely.
+Keeping the old code around for a long time is not ideal, of course, but we will still reap substantial benefits from relying on it less, well before it is actually removed.
+
+The ShoeFits File Format
+========================
+
+The way the new ShoeFits library maps Python objects to FITS files is heavily inspired by the `Advanced Scientific Data Format (ASDF) <https://asdf-standard.readthedocs.io/en/1.1.1/>`__, and especially its ASDF in FITS extension.
+ASDF combines a YAML tree with a sequence of binary blocks, allowing most of a tree of complex objects to be represented in YAML, while allowing large arrays of floating point data to be pulled out of that tree stored naturally in binary form.
+This is of course the same overall approach as FITS, but with FITS's archaic header limitations replaced by a modern hierarchical text format.
+ASDF also defines a data model for common astrophysical primitives like celestial coordinates via JSON schema.
+ASDF-in-FITS is a little-used extension to the ASDF embeds the YAML tree and optional binary blocks into a FITS HDU as 1-d character image or binary table column.
+It also allows the YAML tree to reference binary data in other FITS HDUs, in much the same way ASDF binary blocks are referenced.
+
+The ShoeFits approach is only slightly different:
+
+- it is always a subset of FITS, rather than a potential standalone format, and all binary storage uses FITS mechanisms;
+- it embeds a JSON tree in a FITS binary table column, instead of YAML;
+
+JSON is far simpler than YAML and much easier and faster to parse as a result, while still being able to represent the same data structures.
+Even more importantly, library support for JSON in Python is in great shape, especially via the `Pydantic <https://docs.pydantic.dev/latest/>`__ library that ShoeFits builds on, and the same cannot be said for YAML.
+The ShoeFits approach to data modeling is sufficiently similar to ASDF that it would be straightforward (but not necessarily easy, given the limitations of Python library support for YAML) to extend the ShoeFits library to support writing and reading ASDF files, *without having to change any downstream ShoeFits-based serializaiton implementations*.
+ShoeFits explicitly adopts ASDF's JSON schemas for common astrophysical objects while using Pydantic to generate JSON schemas for custom objects, and those schemas provide the extra "tag" information needed to turn a JSON tree (or an equivalent Python nested `dict`) into YAML.
+
+ShoeFits nevertheless has a lot of FITS-specific interfaces because its goal is to map Python objects to *fully featured* FITS files, with FITS-standard WCSs and other headers that allow them to be at least mostly interpretable by third-party FITS readers that ignore the JSON tree.
+These FITS header key are *exported* from the Python object tree: they are never read when reconstructing a Python object hierarchy from the serialized form, and hence we expect to duplicate the header information in the JSON tree (where it can often be expressed more naturally anyway).
+This helps keep the ShoeFits library simple: it only needs to be able to read the files it writes, not arbitrary external FITS files, and for this it only needs to be able to read JSON (which it can delegate to Pydantic) and FITS binary data.
+If we add ASDF read/write support to ShoeFits in the future, the annotations used to declare FITS header exports would simply be ignored, and could be left out of any objects that would only be serialized to ASDF.
+
+Objects serializable with ShoeFits are also by definition serializable as plain JSON, though in some cases this may be extremely inadvisable (e.g. a 4k x 4k image represented as a nested JSON array or base64-encoded byte string).
+
+ShoeFits could probably be extended to read and write HDF5 as well, though this would be harder to implement than ASDF.
+While HDF5 is also hierarchical and supports the same primitive types as JSON (and then some), a lot of the type mapping that ShoeFits can currently leave to Pydantic would have to be written from scratch for HDF5.
+
+Serialization Implementation Patterns
+=====================================
+
+Objects serializable with ShoeFits are at their core just Pydantic model types, and hence the work of making an existing type serializable involves either:
+
+- making the object itself inherit from `pydantic.BaseModel` (probably appropriate only for the simplest objects);
+- defining a new `class` that inherits from `pydnatic.BaseModel` that represents the serialized form of the type.
+
+Pydantic itself provides support for serializing most Python standard library types, and ShoeFits extends this to `numpy` arrays and a few `astropy` types via type aliases of `typing.Annotated`::
+
+    import pydantic
+    import lsst.shoefits as shf
+
+    class Example(pydantic.BaseModel):
+        array: shf.Array
+        time: shf.Time
+        unit: shf.Unit
+
+At runtime these fields correspond to `numpy.ndarray`, `astropy.time.Time`, and `astropy.unit.Unit`, respectively, and static type checkers like MyPy will see them that way as well.
+When serialized to a JSON tree, this struct will use ASDF data models for representing them in JSON, and in the case of `~lsst.shoefits.Array`, the array data itself may be pulled out of the tree and string pointer to a FITS HDU written in its place.
+For this to work, the serialization needs to go through `~lsst.shoefits.FitsWriteContext` and `~lsst.shoefits.FitsReadContext`, which invoke Pydantic's JSON write/read logic with special hooks that intercept these annotations.
+
+To customize how fields appear in the FITS representation, parameterized annotations can be used::
+
+    import pydantic
+    import lsst.shoefits as shf
+    from typing import Annotated
+
+    class Example(pydantic.BaseModel):
+        array: Annotated[shf.Array, shf.FitsOptions(extname="DATA")]
+        time: shf.Time
+        unit: Annotated[shf.Unit, shf.ExportFitsHeaderKey("BUNIT")]
+
+These FITS-specific annotations would be ignored by any other `~lsst.shoefits.WriteContext` or `~lsst.shoefits.ReadContext` implementation, but for the FITS implementations they result in the ``array`` field being writtend to an image extension HDU with ``EXTNAME='DATA'``, and the ``unit`` field's value written to a FITS header ``BUNIT`` key.
+
+For highly nested objects that map to multiple HDUs, the `~lsst.shoefits.Struct` class (a subclass of `pydantic.BaseModel`) can be used to control whether one field's header exports are exported to sibling, parent, or child headers.
+`~lsst.shoefits.Struct` also provides hooks for more fine-grained control over the FITS representation and ways to populate FITS headers with calculated values.
