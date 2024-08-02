@@ -1,3 +1,5 @@
+.. default-domain:: python
+
 ##########################################
 A New Approach to LSST's Image Data Models
 ##########################################
@@ -40,8 +42,8 @@ Frequently the file will be stored at SLAC/USDF, but the reading code will be ru
 Overview and Transition Plan
 ============================
 
-The ``Exposure`` and ``afw.table.io`` systems are so intertwined that replacing only the problematic parts is effectively impossible, and the proposal described here is an _eventual_ complete replacement.
-It centers around a new, largely-complete library, `ShoeFits`, that will replace ``afw.table.io`` and make it much easier to define ``Exposure`` replacement types in pure Python.
+The ``Exposure`` and ``afw.table.io`` systems are so intertwined that replacing only the problematic parts is effectively impossible, and the proposal described here is an *eventual* complete replacement.
+It centers around a new, largely-complete library, ShoeFits, that will replace ``afw.table.io`` and make it much easier to define ``Exposure`` replacement types in pure Python.
 The details of those replacement types is left unspecified for now, but we do expect more than one - most likely one for post-ISR exposures, another for processed visit images, one for coadds, and another for difference images.
 These will ultimately depend on a completely new suite of component types.
 
@@ -98,13 +100,21 @@ Objects serializable with ShoeFits are also by definition serializable as plain 
 ShoeFits could probably be extended to read and write HDF5 as well, though this would be harder to implement than ASDF.
 While HDF5 is also hierarchical and supports the same primitive types as JSON (and then some), a lot of the type mapping that ShoeFits can currently leave to Pydantic would have to be written from scratch for HDF5.
 
-Serialization Implementation Patterns
-=====================================
+Serialization Features and Patterns
+===================================
+
+.. note::
+
+    This section is written with currently-hypothetical links to an `lsst.shoefits` section of ``pipelines.lsst.io``, which can't work now because ShoeFits isn't actually part of the stack yet.
+    When it is, we'll set up Sphinx linking and make this user-guide-like section more useful (and/or copy it into the code documentatoin).
+
+Basics
+------
 
 Objects serializable with ShoeFits are at their core just Pydantic model types, and hence the work of making an existing type serializable involves either:
 
 - making the object itself inherit from `pydantic.BaseModel` (probably appropriate only for the simplest objects);
-- defining a new `class` that inherits from `pydnatic.BaseModel` that represents the serialized form of the type.
+- defining a new `class` that inherits from `pydantic.BaseModel` that represents the serialized form of the type.
 
 Pydantic itself provides support for serializing most Python standard library types, and ShoeFits extends this to `numpy` arrays and a few `astropy` types via type aliases of `typing.Annotated`::
 
@@ -114,13 +124,13 @@ Pydantic itself provides support for serializing most Python standard library ty
     class Example(pydantic.BaseModel):
         array: shf.Array
         time: shf.Time
-        unit: shf.Unit
+        instrument: str
 
-At runtime these fields correspond to `numpy.ndarray`, `astropy.time.Time`, and `astropy.unit.Unit`, respectively, and static type checkers like MyPy will see them that way as well.
-When serialized to a JSON tree, this struct will use ASDF data models for representing them in JSON, and in the case of `~lsst.shoefits.Array`, the array data itself may be pulled out of the tree and string pointer to a FITS HDU written in its place.
+At runtime these fields correspond to `numpy.ndarray`, `astropy.time.Time`, and `str`, respectively, and static type checkers like MyPy will see them that way as well.
+When serialized to a JSON tree, this struct will use ASDF data models for representing them in JSON, and in the case of `~lsst.shoefits.Array`, the array data itself may be pulled out of the tree with a string pointer to a FITS HDU written in its place.
 For this to work, the serialization needs to go through `~lsst.shoefits.FitsWriteContext` and `~lsst.shoefits.FitsReadContext`, which invoke Pydantic's JSON write/read logic with special hooks that intercept these annotations.
 
-To customize how fields appear in the FITS representation, parameterized annotations can be used::
+To control how fields appear in the FITS representation, parameterized annotations can be used::
 
     import pydantic
     import lsst.shoefits as shf
@@ -129,9 +139,175 @@ To customize how fields appear in the FITS representation, parameterized annotat
     class Example(pydantic.BaseModel):
         array: Annotated[shf.Array, shf.FitsOptions(extname="DATA")]
         time: shf.Time
-        unit: Annotated[shf.Unit, shf.ExportFitsHeaderKey("BUNIT")]
+        instrument: Annotated[str, shf.ExportFitsHeaderKey("INSTRUME")]
 
-These FITS-specific annotations would be ignored by any other `~lsst.shoefits.WriteContext` or `~lsst.shoefits.ReadContext` implementation, but for the FITS implementations they result in the ``array`` field being writtend to an image extension HDU with ``EXTNAME='DATA'``, and the ``unit`` field's value written to a FITS header ``BUNIT`` key.
+These FITS-specific annotations would be ignored by any other `~lsst.shoefits.WriteContext` or `~lsst.shoefits.ReadContext` implementation, but for the FITS implementations they result in the ``array`` field being writtend to an image extension HDU with ``EXTNAME='DATA'``, and the ``instrument`` field's value written to a FITS header ``INSTRUME`` key.
+The corresponding file layout is shown below.
 
-For highly nested objects that map to multiple HDUs, the `~lsst.shoefits.Struct` class (a subclass of `pydantic.BaseModel`) can be used to control whether one field's header exports are exported to sibling, parent, or child headers.
+.. literalinclude:: example-layout.txt
+
+For highly nested objects that map to multiple HDUs, the `~lsst.shoefits.Struct` class (a subclass of `pydantic.BaseModel`) can be used to control whether a field's header exports are exported to the headers of HDUs created by sibling, parent, or child fields.
 `~lsst.shoefits.Struct` also provides hooks for more fine-grained control over the FITS representation and ways to populate FITS headers with calculated values.
+
+
+Serialization by Proxy
+----------------------
+
+In order to make a custom type serializable via a separate model class, the mapping can be defined via a `~lsst.shoefits.Adapter` subclass::
+
+    import pydantic
+    import lsst.shoefits as shf
+    from typing import Annotated, TypeAlias
+
+    class Thing:
+        """An arbitrary type that isn't serializable directly."""
+
+        def __init__(self, a: int):
+            self._a = a
+
+
+    class ThingModel(pydantic.BaseModel):
+        """A model type representing the serializable form of `Thing`."""
+        a: int
+
+    class ThingAdapter(shf.Adapter[Thing, ThingModel]):
+        """Class that declares serialization for `Thing` via `ThingModel`."""
+
+        @property
+        def model_type -> type[ThingModel]:
+            return ThingModel
+
+        def to_model(self, thing: Thing) -> ThingModel:
+            return ThingModel(a=thing._a)
+
+        def from_model(self, model: ThingModel) -> Thing:
+            return Thing(model.a)
+
+    SerializableThing: TypeAlias = Annotated[Thing, ThingAdapter]
+
+Any parent model type can now declare a field of type ``SerializableThing``, which will be a ``Thing`` instance at runtime and in static type checkers, while being transparently serializable via ``ThingModel``.
+
+ShoeFits Primitives
+-------------------
+
+ShoeFits defines a few new serializable classes that can be used as building blocks for higher-level models:
+
+- `~lsst.shoefits.Box` is analogous to `lsst.geom.Box2I`, but is not limited to two dimensions.
+  This is a Pydantic model and is hence directly serializable.
+- `~lsst.shoefits.Interval` is analogous to `lsst.geom.IntervalI`, and exists largely to help implement `~lsst.shoefits.Box`.
+  It is also a Pydantic model.
+- `~lsst.shoefits.Image` is analogous to `lsst.afw.image.Image`: it combines 2-d numpy array with a 2-d integer offset that can be used to match a subimage's coordinate system to that of its parent image.
+  It also has an optional `astropy.unit.Unit`, allowing images with units to be saved via the ASDF ``Quantity`` data model.
+  `~lsst.shoefits.Image` is not a Pydantic model, but it implements Pydantic's special custom-object serialization hooks in the same way the `~lsst.shoefits.Array` type alias does, allowing it to be stored in-line in the JSON tree or (usually) in a separate FITS image HDU.
+  When saved to FITS HDU, a special FITS WCS is written to represent the integer offset coordinate system, just as with `lsst.afw.image.Image`.
+- `~lsst.shoefits.Mask` is analogous to `lsst.afw.mask.Mask`, i.e. an integer bitmask, but it delegates management of the mask planes to a separate `~lsst.shoefits.MaskSchema` object that can be shared by `~lsst.shoefits.Mask` instances without being a singleton.
+  Unlike its ``afw`` counterpart, `~lsst.shoefits.Mask` is backed by a 3-d array, with the last dimension used to support dynamic number of mask planes: typically the ``dtype`` of a `~lsst.shoefits.Mask` backing array is just ``unit8``, and the shape of the last dimension is the number of mask planes divided by eight.
+
+These types provide some convenience methods for use as first-class in-memory types (subimage slicing and mask plane interpretation), but are not a complete replacement for their C++-backed `lsst.geom` and `lsst.afw.image` counterparts.
+Instead, they can be used to implement serialization for those types via the
+`~lsst.shoefits.Adapter` interface, e.g.::
+
+    from lsst.geom import Box2I, Point2I
+    import lsst.shoefits as shf
+
+    class BoxAdapter(shf.Adapter[Box2I, shf.Box]):
+        @property
+        def model_type(self) -> type[shf.Box]:
+            return shf.Box
+        def to_model(self, box: Box2I) -> shf.Box:
+            return shf.Box.factory[box.getSlices()]
+        def from_model(self, model: shf.Box) -> Box2I:
+            return Box2I(Point2I(box.x.min, box.x.max), Point2I(box.y.min, box.y.max))
+
+Defining these adapters will be one of the first tasks involved in implementing the ShoeFits models to replace ``Exposure``.
+
+These adapters can be used directly as an annotation, i.e. ``Annotated[Box2I, BoxAdapter]``, but in many cases it will be easier to just call the adapter methods directly in some higher-level `~lsst.shoefits.Adapter` in which the model type uses the ShoeFits primitive directly.
+
+Polymorphism
+------------
+
+Some of our most important ``Exposure`` component types are instances of an abstract base class or reliant internally on one, such as `lsst.afw.detection.Psf` or `lsst.afw.math.BoundedField`.
+When the set of possible subclasses can be fully enumerated when a parent model type is define, it's often best to do just that, using `typing.Union` or the equivalent ``|`` syntax::
+
+    import pydantic
+
+    class A(pydantic.BaseModel):
+        value: int
+
+    class B(pydantic.BaseModel):
+        value: str
+
+    class Holder(pydantic.BaseModel):
+        nested: A | B
+
+Pydantic's `discriminated union <https://docs.pydantic.dev/latest/concepts/unions/#discriminated-unions>`__ functionality can be used to make this pattern much more efficient and robus (the default implementation on read is to try all possibilities until one works).
+Union types benefit fully from Pydantic's JSON schema generation and don't require any special extension hooks or import logic to work.
+
+When the set of possible subtypes cannot be enumerated in advance, the `~lsst.shoefits.Polymorphic` annotation can be used to indicate that an `~lsst.shoefits.Adapter` can be looked up via a serialized "tag" string::
+
+    from abc import ABC, abstractmethod
+    from typing import Annotated
+    import lsst.shoefits as shf
+
+    class Base(ABC):
+
+        @abstractmethod
+        def get_value(self) -> int:
+            raise NotImplementedError()
+
+        @abstractmethod
+        def _get_tag(self) -> str:
+            raise NotImplementedError()
+
+    class Holder(pydantic.BaseModel):
+        nested: Annotated[Base, shf.Polymorphic(lambda x: x._get_tag())]
+
+We can then declare an implementation downstream via an adapter::
+
+    class Derived1(Base):
+        def get_value(self) -> int:
+            return 1
+
+        def _get_tag(self) -> str:
+            return "one"
+
+    class Model1(pydantic.BaseModel):
+        pass
+
+    class Adapter1(shf.Adapter[Derived1, Model1]):
+
+        @property
+        def model_type(self) -> type[Model1]:
+            return Model1
+
+        def to_model(self, d: Derived1) -> Model1:
+            return Model1()
+
+        def from_model(self, m: Model1) -> Derived1:
+            return Derived1()
+
+And finally register it::
+
+    registry = shf.PolymorphicAdapterRegistry()
+    registry.register_adapted("one", Adapter1())
+
+For the case where a polymorphic implementation class is itself a Pydantic model, we can skip the adapter class and register it as native::
+
+    class Derived2(Base, pydantic.BaseModel):
+        value: int
+
+        def get_value(self) -> int:
+            return self.value
+
+        def _get_tag(self) -> str:
+            return "two"
+
+    registry.register_native("two", Derived2)
+
+In both cases, the registration step needs to happen before reading begins, which means that it is not sufficient to declare a global `~lsst.shoefits.PolymorphicAdapterRegistry` instance in a low-level package and have downstream packages add their own types to it at import time, unless something else takes responsibility for importing them before read attempts are made.
+The exact mechanism we'll use to solve this problem is TBD; ShoeFits tries to be agnostic to it, largely to avoid imposing any solution that might run afoul of security concerns (e.g. importing modules according to serialized strings).
+
+In all the above, the definition of the ``Base`` ABC is actually unimportant: it's good practice, of course, as a way to clearly define an interface, and static type checkers will see ``Annotated[Base, Polymorphic(...)]`` as just ``Base``, as usual with `Annotated`.
+But neither ShoeFits nor Pydantic will actually check that objects loaded via the adaper registry actually inherit from `Base`, so it's perfectly viable for the annotation to be a `typing.Protocol` or even just `typing.Any` or `object`, if the interface isn't formalized or strongly typed.
+
+In addition to the complexity involved in setting up an adapter registry, the major disadvantage of `~lsst.shoefits.Polymorphic` is that there is no way to emit JSON schema for polymorphic fields, since the parent model type has no information about how those fields will be serialized.
