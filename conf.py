@@ -2,3 +2,5 @@
 # https://documenteer.lsst.io/technotes/
 
 from documenteer.conf.technote import *  # noqa F401 F403
+
+default_role = "py:obj"
