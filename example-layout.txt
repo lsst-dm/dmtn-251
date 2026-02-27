@@ -1,0 +1,54 @@
+SIMPLE  =                    T / conforms to FITS standard
+BITPIX  =                    8 / array data type
+NAXIS   =                    0 / number of array dimensions
+EXTEND  =                    T
+SHOEFITS= '0.0.1   '           / SHOEFITS format version.
+INSTRUME= 'ImaginaryCam'
+TREEADDR=                 8640
+----------------------------------------------------------------------
+XTENSION= 'IMAGE   '           / Image extension
+BITPIX  =                   16 / array data type
+NAXIS   =                    2 / number of array dimensions
+NAXIS1  =                    3
+NAXIS2  =                    2
+PCOUNT  =                    0 / number of parameters
+GCOUNT  =                    1 / number of groups
+INHERIT =                    T
+EXTNAME = 'DATA    '
+EXTVER  =                    1
+----------------------------------------------------------------------
+<binary image data>
+----------------------------------------------------------------------
+XTENSION= 'BINTABLE'           / binary table extension
+BITPIX  =                    8 / array data type
+NAXIS   =                    2 / number of array dimensions
+NAXIS1  =                    8 / length of dimension 1
+NAXIS2  =                    1 / length of dimension 2
+PCOUNT  =                  265 / number of group parameters
+GCOUNT  =                    1 / number of groups
+TFIELDS =                    1 / number of table fields
+EXTNAME = 'tree    '
+LBL00001= 'DATA,1  '           / Label for extension used in tree.
+ADR00001=                 5760 / Address of extension data.
+TTYPE1  = 'json    '
+TFORM1  = 'PB(265) '
+----------------------------------------------------------------------
+<binary table heap pointers>
+----------------------------------------------------------------------
+{
+  "array": {
+    "source": "fits:DATA,1",
+    "shape": [
+      2,
+      3
+    ],
+    "datatype": "int16",
+    "byteorder": "big"
+  },
+  "time": {
+    "value": "2024-08-02 21:23:48.821",
+    "scale": "utc",
+    "format": "iso"
+  },
+  "instrument": "ImaginaryCam"
+}

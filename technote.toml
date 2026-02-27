@@ -10,7 +10,16 @@ organization.ror = "https://ror.org/048g3cy84"
 license.id = "CC-BY-4.0"
 
 [technote.status]
-state = "draft"
+state = "deprecated"
+note = "This technote is deprecated because the proposal was found to be too complex."
+
+[[technote.status.supersceding_urls]]
+title = "RFC-1133: a simpler, less-ambitious version of many of this technote's ideas."
+url = "https://rubinobs.atlassian.net/browse/RFC-1133"
+
+[[technote.status.supersceding_urls]]
+title = "lsst.images: the implementation of RFC-1133."
+url = "https://github.com/lsst/images"
 
 [[technote.authors]]
 name.given = "James F."
@@ -21,3 +30,9 @@ orcid = "https://orcid.org/0000-0003-2759-5764"
 name = "Department of Astrophysical Sciences"
 internal_id = "Princeton-Astro"
 address = "Princeton University, Princeton, NJ 08544, USA"
+
+[technote.sphinx.intersphinx.projects]
+python = "https://docs.python.org/3/"
+astropy = "https://docs.astropy.org/en/stable/"
+numpy = "https://numpy.org/doc/stable/"
+pipelines = "https://pipelines.lsst.io/v/weekly/"
